@@ -1,9 +1,6 @@
-"""
-Motor de Prolog para diagnósticos médicos
-Conecta Python con el sistema de reglas en Prolog
-"""
 
 import os
+import re
 from pathlib import Path
 
 try:
@@ -20,17 +17,15 @@ class PrologDiagnosticEngine:
     def __init__(self):
         """Inicializa el motor de Prolog"""
         self.prolog = Prolog()
-        
-        # Cargar el archivo de reglas
+         
         rules_file = os.path.join(os.path.dirname(__file__), "diagnostic_rules.pl")
         
         if not os.path.exists(rules_file):
             raise FileNotFoundError(f"Archivo de reglas no encontrado: {rules_file}")
-        
-        # Cargar las reglas en Prolog
+         
         try:
             self.prolog.consult(rules_file)
-            print(f"✓ Reglas de Prolog cargadas desde: {rules_file}")
+            print(f" Reglas de Prolog cargadas desde: {rules_file}")
         except Exception as e:
             raise Exception(f"Error al cargar reglas Prolog: {e}")
     
@@ -40,11 +35,11 @@ class PrologDiagnosticEngine:
             sintomas = []
             for result in self.prolog.query("todos_sintomas(S)"):
                 sintomas_temp = result["S"]
-                # Convertir lista de Prolog a lista de Python
+                
                 sintomas = self._prolog_list_to_python(sintomas_temp)
                 break
             
-            # Formatear para GUI (reemplazar guiones bajos por espacios)
+            
             sintomas_formateados = [s.replace('_', ' ').title() for s in sintomas]
             return sorted(sintomas_formateados)
         except Exception as e:
@@ -62,32 +57,42 @@ class PrologDiagnosticEngine:
             Lista de tuplas (condición, relevancia)
         """
         try:
-            # Convertir síntomas a formato Prolog (minúsculas y guiones bajos)
+            
             sintomas_prolog = [s.lower().replace(' ', '_') for s in sintomas_seleccionados]
             
-            # Crear lista Prolog
+            
             sintomas_formato_prolog = self._python_list_to_prolog(sintomas_prolog)
             
-            # Consultar diagnósticos ordenados
+            
             diagnosticos = []
             query = f"diagnosticos_ordenados({sintomas_formato_prolog}, D)"
             
             for result in self.prolog.query(query):
                 diagnosticos_lista = result["D"]
-                diagnosticos_temp = self._prolog_list_to_python(diagnosticos_lista)
-                
-                # Convertir formato de Prolog a tuplas (condición, relevancia)
+
                 diagnosticos_con_relevancia = []
-                for item in diagnosticos_temp:
-                    # item es de formato: "condición-relevancia"
-                    if isinstance(item, str) and '-' in item:
-                        partes = item.split('-')
-                        if len(partes) == 2:
-                            condicion, relevancia = partes
-                            diagnosticos_con_relevancia.append(
-                                (condicion.replace('_', ' ').title(), int(relevancia))
-                            )
-                
+
+
+                if isinstance(diagnosticos_lista, str):
+                    diagnosticos_con_relevancia = self._parse_diagnosticos_list_string(diagnosticos_lista)
+
+
+                elif hasattr(diagnosticos_lista, '__iter__'):
+                    for item in diagnosticos_lista:
+                        diagnostico = self._parse_diagnostico_item(item)
+                        if diagnostico:
+                            diagnosticos_con_relevancia.append(diagnostico)
+
+
+                    if not diagnosticos_con_relevancia:
+                        diagnosticos_con_relevancia = self._parse_diagnosticos_list_string(str(diagnosticos_lista))
+
+
+                else:
+                    diagnostico = self._parse_diagnostico_item(diagnosticos_lista)
+                    if diagnostico:
+                        diagnosticos_con_relevancia.append(diagnostico)
+
                 diagnosticos = diagnosticos_con_relevancia
                 break
             
@@ -196,6 +201,66 @@ class PrologDiagnosticEngine:
         
         items = ", ".join([f"'{item}'" for item in py_list])
         return f"[{items}]"
+
+    def _parse_diagnostico_item(self, item):
+        """Convierte un resultado de Prolog en tupla (condición, relevancia)."""
+        try:
+            # Caso directo: (condicion, relevancia)
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                condicion, relevancia = item
+                condicion_limpia = str(condicion).strip().strip("'\"")
+                return (condicion_limpia.replace('_', ' ').title(), int(relevancia))
+
+            # Fallback robusto para representaciones en string:
+            # - "gripe-1"
+            # - "(gripe, 1)"
+            item_str = str(item).strip()
+
+            # Formato: (condicion, numero)
+            match_par = re.match(r"^\(\s*([^,]+)\s*,\s*(-?\d+)\s*\)$", item_str)
+            if match_par:
+                condicion = match_par.group(1).strip().strip("'\"")
+                relevancia = int(match_par.group(2))
+                return (condicion.replace('_', ' ').title(), relevancia)
+
+            # Formato: condicion-numero
+            match_guion = re.match(r"^(.+)-(-?\d+)$", item_str)
+            if match_guion:
+                condicion = match_guion.group(1).strip().strip("'\"")
+                relevancia = int(match_guion.group(2))
+                return (condicion.replace('_', ' ').title(), relevancia)
+
+            return None
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_diagnosticos_list_string(self, lista_str):
+        """Parsea una lista de diagnósticos serializada en string.
+
+        Soporta formatos como:
+        - "[gripe-3,resfriado-1]"
+        - "[(gripe, 3), (resfriado, 1)]"
+        """
+        diagnosticos = []
+
+        if not lista_str:
+            return diagnosticos
+
+        texto = str(lista_str).strip()
+
+        # Formato: (condicion, numero)
+        for condicion, relevancia in re.findall(r"\(\s*([^,\)]+)\s*,\s*(-?\d+)\s*\)", texto):
+            condicion_limpia = condicion.strip().strip("'\"")
+            diagnosticos.append((condicion_limpia.replace('_', ' ').title(), int(relevancia)))
+
+        if diagnosticos:
+            return diagnosticos
+
+        # Formato: condicion-numero
+        for condicion, relevancia in re.findall(r"([a-zA-Z0-9_]+)\s*-\s*(-?\d+)", texto):
+            diagnosticos.append((condicion.replace('_', ' ').title(), int(relevancia)))
+
+        return diagnosticos
     
     def _prolog_list_to_python(self, prolog_list):
         """Convierte una lista de Prolog a lista de Python"""
