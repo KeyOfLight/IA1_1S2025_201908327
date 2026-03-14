@@ -46,37 +46,6 @@
       "symptoms": [
         {
           "name": "Fiebre",
-          "severity": "Moderado"
-        },
-        {
-          "name": "Tos",
-          "severity": "Moderado"
-        },
-        {
-          "name": "Dolor de cabeza",
-          "severity": "Moderado"
-        }
-      ],
-      "enfermedades_cronicas": [],
-      "alergias": [],
-      "conditions": [
-        {
-          "name": "Gripe",
-          "relevance": 3
-        },
-        {
-          "name": "Resfriado",
-          "relevance": 2
-        }
-      ],
-      "date": "2026-03-09 22:01:57",
-      "source": "prolog"
-    },
-    {
-      "id": 3,
-      "symptoms": [
-        {
-          "name": "Fiebre",
           "severity": "Severo"
         },
         {

@@ -14,6 +14,7 @@ from rpa_automation import execute_diagnosis_rpa_flow, get_rpa_status as get_rpa
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(BASE_DIR, "credentials.json")
 DIAGNOSES_FILE = os.path.join(BASE_DIR, "diagnoses.json")
+PDF_REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 
 
 def initialize_data():
@@ -155,6 +156,35 @@ def save_diagnosis(
 
         rpa_result = None
         if run_rpa:
+            pdf_result = {
+                "generated": False,
+                "path": None,
+                "message": "PDF no generado."
+            }
+
+            try:
+                report_payload = construir_reporte_diagnostico(
+                    symptoms=processed_symptoms,
+                    conditions=conditions,
+                    chronic_diseases=chronic_diseases,
+                    allergies=allergies,
+                    urgency_profile=urgency_profile,
+                    diagnosis_id=diagnosis_record["id"],
+                    report_date=diagnosis_record["date"],
+                )
+                pdf_path = generar_informe_pdf(report_payload)
+                pdf_result = {
+                    "generated": True,
+                    "path": pdf_path,
+                    "message": "Informe PDF generado correctamente."
+                }
+            except Exception as pdf_error:
+                pdf_result = {
+                    "generated": False,
+                    "path": None,
+                    "message": f"No se pudo generar PDF: {pdf_error}",
+                }
+
             try:
                 rpa_result = execute_diagnosis_rpa_flow(diagnosis_record)
             except Exception as rpa_error:
@@ -165,6 +195,23 @@ def save_diagnosis(
                     "screenshot_path": None,
                     "message": f"Fallo inesperado en RPA: {rpa_error}",
                 }
+
+            if rpa_result is None:
+                rpa_result = {
+                    "executed": False,
+                    "available": False,
+                    "report_path": None,
+                    "screenshot_path": None,
+                    "message": "Sin resultados de RPA.",
+                }
+
+            rpa_result["pdf_generated"] = pdf_result.get("generated", False)
+            rpa_result["pdf_report_path"] = pdf_result.get("path")
+            if not pdf_result.get("generated"):
+                current_message = str(rpa_result.get("message", "")).strip()
+                pdf_message = str(pdf_result.get("message", "")).strip()
+                if pdf_message and pdf_message not in current_message:
+                    rpa_result["message"] = f"{current_message}\n{pdf_message}".strip()
         
         print(f"✓ Diagnóstico guardado (desde Prolog): ID {diagnosis_record['id']}")
         if return_details:
@@ -184,6 +231,306 @@ def save_diagnosis(
                 "error": str(e),
             }
         return False
+
+
+def _severity_weight(severity):
+    """Convierte severidad textual a puntaje numerico."""
+    sev = str(severity or "moderado").strip().lower()
+    mapping = {
+        "severo": 3,
+        "alto": 3,
+        "moderado": 2,
+        "medio": 2,
+        "leve": 1,
+        "bajo": 1,
+    }
+    return mapping.get(sev, 2)
+
+
+def _normalize_symptoms(symptoms):
+    """Normaliza sintomas a formato [{name, severity}] para reporteria."""
+    normalized = []
+    for symptom in symptoms or []:
+        if isinstance(symptom, dict):
+            name = str(symptom.get("name", "")).strip()
+            severity = str(symptom.get("severity", "Moderado")).strip() or "Moderado"
+        else:
+            name = str(symptom).strip()
+            severity = "Moderado"
+
+        if name:
+            normalized.append({"name": name, "severity": severity})
+
+    return normalized
+
+
+def _normalize_conditions(conditions):
+    """Normaliza condiciones a formato [{name, relevance}] ordenadas desc."""
+    normalized = []
+    for item in conditions or []:
+        if isinstance(item, tuple):
+            name = str(item[0]).strip()
+            relevance = item[1] if len(item) > 1 else 1
+        elif isinstance(item, dict):
+            name = str(item.get("name", "")).strip()
+            relevance = item.get("relevance", 1)
+        else:
+            name = str(item).strip()
+            relevance = 1
+
+        if not name:
+            continue
+
+        try:
+            relevance_value = float(relevance)
+        except (TypeError, ValueError):
+            relevance_value = 1.0
+
+        normalized.append({"name": name, "relevance": relevance_value})
+
+    normalized.sort(key=lambda row: row["relevance"], reverse=True)
+    return normalized
+
+
+def _condition_affinity_percent(raw_score, max_possible_score):
+    """Calcula afinidad porcentual para una condicion."""
+    if max_possible_score <= 0:
+        return 0.0
+    percent = (float(raw_score) / float(max_possible_score)) * 100.0
+    return round(max(0.0, min(100.0, percent)), 1)
+
+
+def _resolve_matched_symptoms(condition, symptoms):
+    """Obtiene sintomas reportados que activaron reglas relacion/2 para una condicion."""
+    matched = []
+    try:
+        engine = get_prolog_engine()
+        condition_atom = engine._to_prolog_atom(condition)
+
+        for symptom in symptoms:
+            symptom_name = str(symptom.get("name", "")).strip()
+            if not symptom_name:
+                continue
+
+            symptom_atom = engine._to_prolog_atom(symptom_name)
+            query = f"relacion({symptom_atom}, {condition_atom})"
+
+            has_match = False
+            for _ in engine.prolog.query(query):
+                has_match = True
+                break
+
+            if has_match:
+                matched.append(symptom)
+    except Exception as e:
+        print(f"Error resolviendo sintomas coincidentes para {condition}: {e}")
+
+    return matched
+
+
+def _estimate_condition_urgency(condition, affinity_percent, overall_profile):
+    """Estima urgencia por diagnostico usando condicion urgente + afinidad + perfil global."""
+    overall_level = str((overall_profile or {}).get("nivel_urgencia", "leve")).lower()
+    is_urgent_condition = es_condicion_urgente(condition)
+
+    if is_urgent_condition:
+        return {
+            "level": "severo",
+            "action": "Consulta medica inmediata sugerida.",
+            "reason": "Condicion marcada como urgente por regla es_urgente/1."
+        }
+
+    if affinity_percent >= 70.0 or overall_level == "severo":
+        return {
+            "level": "severo",
+            "action": "Consulta medica inmediata sugerida.",
+            "reason": "Alta afinidad clinica y/o perfil global severo."
+        }
+
+    if affinity_percent >= 40.0 or overall_level == "moderado":
+        return {
+            "level": "moderado",
+            "action": "Observacion recomendada y consulta en menos de 24 horas.",
+            "reason": "Afinidad intermedia con sintomas relevantes."
+        }
+
+    return {
+        "level": "leve",
+        "action": "Posible automanejo con vigilancia de sintomas.",
+        "reason": "Afinidad baja y sin marcadores de urgencia inmediata."
+    }
+
+
+def _build_activated_rules(condition, matched_symptoms, blocked_meds, urgent_condition):
+    """Construye explicacion de reglas Prolog activadas para el diagnostico."""
+    symptom_names = [s.get("name", "") for s in matched_symptoms if s.get("name")]
+    severity_detail = ", ".join(
+        [f"{s['name']}={s.get('severity', 'Moderado')}" for s in matched_symptoms if s.get("name")]
+    )
+
+    rules = [
+        {
+            "rule": "diagnosticos_ordenados/2",
+            "explanation": f"Ordeno la condicion '{condition}' segun coincidencias clinicas detectadas.",
+        },
+        {
+            "rule": "contar_coincidencias/3 + relacion/2",
+            "explanation": (
+                "Coincidencias encontradas con sintomas: "
+                f"{', '.join(symptom_names) if symptom_names else 'ninguna coincidencia directa'}"
+            ),
+        },
+        {
+            "rule": "peso_severidad/2",
+            "explanation": (
+                f"Ponderacion aplicada por severidad reportada: {severity_detail or 'sin detalle de severidad'}"
+            ),
+        },
+        {
+            "rule": "medicamentos_seguros_para_paciente/4",
+            "explanation": "Filtro terapeutico para excluir opciones con alergias o condiciones cronicas.",
+        },
+    ]
+
+    if blocked_meds:
+        blocked_summary = ", ".join(
+            [f"{m.get('medicamento', 'N/A')} ({m.get('motivo', 'conflicto')})" for m in blocked_meds[:4]]
+        )
+        rules.append(
+            {
+                "rule": "medicamentos_bloqueados_para_paciente/4 + medicamento_bloqueado_con_motivo/4",
+                "explanation": f"Se bloquearon opciones por seguridad: {blocked_summary}.",
+            }
+        )
+
+    if urgent_condition:
+        rules.append(
+            {
+                "rule": "es_urgente/1",
+                "explanation": "La condicion activa protocolo de atencion inmediata.",
+            }
+        )
+
+    return rules
+
+
+def construir_reporte_diagnostico(
+    symptoms,
+    conditions,
+    chronic_diseases=None,
+    allergies=None,
+    urgency_profile=None,
+    diagnosis_id=None,
+    report_date=None,
+):
+    """Construye payload enriquecido para informe PDF de diagnostico."""
+    normalized_symptoms = _normalize_symptoms(symptoms)
+    normalized_conditions = _normalize_conditions(conditions)
+    chronic_diseases = _normalize_text_list(chronic_diseases)
+    allergies = _normalize_text_list(allergies)
+    urgency_profile = urgency_profile or {
+        "score": 0,
+        "nivel_urgencia": "leve",
+        "accion_recomendada": "Observacion recomendada."
+    }
+
+    max_possible_score = sum(_severity_weight(s.get("severity")) for s in normalized_symptoms)
+    if max_possible_score <= 0:
+        max_possible_score = max(len(normalized_symptoms), 1)
+
+    detailed_diagnoses = []
+    for item in normalized_conditions:
+        condition_name = item["name"]
+        raw_score = item["relevance"]
+        affinity_percent = _condition_affinity_percent(raw_score, max_possible_score)
+
+        classification = obtener_clasificacion_condicion(condition_name)
+        treatment = sugerir_tratamiento_seguro(
+            condition_name,
+            alergias=allergies,
+            enfermedades_cronicas=chronic_diseases,
+        )
+        safe_meds = treatment.get("medicamentos_seguros", [])
+        blocked_meds = treatment.get("medicamentos_bloqueados", [])
+        recommended_medication = safe_meds[0] if safe_meds else None
+
+        matched_symptoms = _resolve_matched_symptoms(condition_name, normalized_symptoms)
+        condition_urgency = _estimate_condition_urgency(condition_name, affinity_percent, urgency_profile)
+        urgent_condition = bool(es_condicion_urgente(condition_name))
+        activated_rules = _build_activated_rules(
+            condition_name,
+            matched_symptoms,
+            blocked_meds,
+            urgent_condition,
+        )
+
+        detailed_diagnoses.append(
+            {
+                "name": condition_name,
+                "raw_score": raw_score,
+                "affinity_percent": affinity_percent,
+                "classification": classification,
+                "urgency": condition_urgency,
+                "recommended_medication": recommended_medication,
+                "safe_medications": safe_meds,
+                "blocked_medications": blocked_meds,
+                "matched_symptoms": matched_symptoms,
+                "activated_rules": activated_rules,
+                "recommendation": obtener_recomendacion_prolog(condition_name),
+            }
+        )
+
+    has_critical = any(d["urgency"]["level"] == "severo" for d in detailed_diagnoses)
+    warnings = [
+        "Este informe es preliminar y no reemplaza evaluacion medica profesional.",
+        "No iniciar ni suspender medicamentos sin supervision clinica.",
+    ]
+    if has_critical:
+        warnings.append("Se detectaron diagnosticos de alta urgencia. Se recomienda consulta inmediata.")
+
+    summary = {
+        "diagnosis_count": len(detailed_diagnoses),
+        "top_diagnosis": detailed_diagnoses[0]["name"] if detailed_diagnoses else "Sin coincidencias",
+        "top_affinity_percent": detailed_diagnoses[0]["affinity_percent"] if detailed_diagnoses else 0.0,
+        "overall_urgency": urgency_profile.get("nivel_urgencia", "leve"),
+        "overall_action": urgency_profile.get("accion_recomendada", "Observacion recomendada."),
+    }
+
+    generated_at = report_date or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_identifier = diagnosis_id if diagnosis_id is not None else f"TMP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    return {
+        "report_id": report_identifier,
+        "generated_at": generated_at,
+        "summary": summary,
+        "warnings": warnings,
+        "patient_profile": {
+            "symptoms": normalized_symptoms,
+            "chronic_diseases": chronic_diseases,
+            "allergies": allergies,
+        },
+        "urgency_profile": urgency_profile,
+        "diagnoses": detailed_diagnoses,
+        "system_stamp": "MediLogic - Informe Clinico Preliminar",
+    }
+
+
+def generar_informe_pdf(report_payload, output_path=None):
+    """Genera informe PDF y devuelve la ruta absoluta del archivo."""
+    if output_path is None:
+        os.makedirs(PDF_REPORTS_DIR, exist_ok=True)
+        report_id = str(report_payload.get("report_id", "tmp")).replace(" ", "_")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(PDF_REPORTS_DIR, f"informe_diagnostico_{report_id}_{timestamp}.pdf")
+
+    try:
+        from pdf_report import generar_pdf_diagnostico
+    except ImportError as e:
+        raise RuntimeError(
+            "No se pudo importar el generador PDF. Instale dependencias con: pip install -r requirements.txt"
+        ) from e
+
+    return generar_pdf_diagnostico(report_payload, output_path)
 
 
 def _normalize_text_list(values):
@@ -419,6 +766,20 @@ def get_diagnoses():
         Lista de diagnósticos formateados para la tabla
     """
     initialize_data()
+
+    def _format_items(items):
+        """Convierte listas mixtas (dict/string) en texto legible para tabla."""
+        formatted = []
+        for item in items or []:
+            if isinstance(item, dict):
+                value = str(item.get("name", "")).strip()
+            else:
+                value = str(item).strip()
+
+            if value:
+                formatted.append(value)
+
+        return ", ".join(formatted)
     
     try:
         with open(DIAGNOSES_FILE, 'r', encoding='utf-8') as f:
@@ -427,28 +788,21 @@ def get_diagnoses():
         diagnoses_list = []
         for diagnosis in data.get("diagnoses", []):
             # Formatear síntomas
-            symptoms_str = ", ".join(diagnosis.get("symptoms", []))
+            symptoms_str = _format_items(diagnosis.get("symptoms", []))
             if not symptoms_str:
                 symptoms_str = "No registrados"
 
             # Formatear enfermedades crónicas y alergias
-            chronic_diseases_str = ", ".join(diagnosis.get("enfermedades_cronicas", []))
+            chronic_diseases_str = _format_items(diagnosis.get("enfermedades_cronicas", []))
             if not chronic_diseases_str:
                 chronic_diseases_str = "No reportadas"
 
-            allergies_str = ", ".join(diagnosis.get("alergias", []))
+            allergies_str = _format_items(diagnosis.get("alergias", []))
             if not allergies_str:
                 allergies_str = "No reportadas"
             
             # Formatear condiciones
-            condition_names = []
-            for condition in diagnosis.get("conditions", []):
-                if isinstance(condition, dict):
-                    condition_names.append(condition.get("name", ""))
-                else:
-                    condition_names.append(str(condition))
-
-            conditions_str = ", ".join([name for name in condition_names if name])
+            conditions_str = _format_items(diagnosis.get("conditions", []))
             if not conditions_str:
                 conditions_str = "Sin diagnóstico"
             

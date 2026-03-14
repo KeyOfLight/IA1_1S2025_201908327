@@ -1,7 +1,10 @@
 import tkinter as tk
-from tkinter import font, messagebox, scrolledtext
+from datetime import datetime
+from tkinter import filedialog, font, messagebox, scrolledtext
 from database import (
     save_diagnosis,
+    construir_reporte_diagnostico,
+    generar_informe_pdf,
     obtener_sintomas,
     obtener_diagnostico_prolog,
     obtener_clasificacion_diagnosticos,
@@ -595,6 +598,25 @@ Por favor, diríjase a un médico calificado para:
             )
         )
         btn_save_rpa.pack(side=tk.LEFT, padx=5)
+
+        btn_pdf = tk.Button(
+            button_frame,
+            text="Descargar Informe PDF",
+            font=self.text_font,
+            bg="#1f618d",
+            fg="white",
+            padx=10,
+            pady=8,
+            cursor="hand2",
+            command=lambda: self.download_pdf_report(
+                symptoms=symptoms_with_severity,
+                conditions=diagnosticos_prolog,
+                chronic_diseases=chronic_diseases,
+                allergies=allergies,
+                urgency_profile=urgency_profile,
+            )
+        )
+        btn_pdf.pack(side=tk.LEFT, padx=5)
         
         btn_close = tk.Button(
             button_frame,
@@ -641,15 +663,59 @@ Por favor, diríjase a un médico calificado para:
                 "Éxito - RPA Ejecutado",
                 "Registro guardado y flujo RPA completado con PyAutoGUI.\n\n"
                 f"Reporte: {rpa_result.get('report_path')}\n"
-                f"Captura: {rpa_result.get('screenshot_path')}"
+                f"Captura: {rpa_result.get('screenshot_path')}\n"
+                f"PDF: {rpa_result.get('pdf_report_path', 'No generado')}"
             )
             return
 
+        pdf_message = (
+            f"PDF generado: {rpa_result.get('pdf_report_path')}"
+            if rpa_result.get("pdf_generated")
+            else "PDF no generado"
+        )
         messagebox.showwarning(
             "Registro guardado - RPA parcial",
             "El diagnóstico fue guardado, pero el flujo RPA no se completó totalmente.\n\n"
             f"Detalle: {rpa_result.get('message', 'Sin detalle')}\n"
-            f"Reporte generado: {rpa_result.get('report_path', 'No disponible')}"
+            f"Reporte generado: {rpa_result.get('report_path', 'No disponible')}\n"
+            f"{pdf_message}"
+        )
+
+    def download_pdf_report(self, symptoms, conditions, chronic_diseases=None, allergies=None, urgency_profile=None):
+        """Permite descargar informe PDF completo del analisis actual."""
+        try:
+            report_payload = construir_reporte_diagnostico(
+                symptoms=symptoms,
+                conditions=conditions,
+                chronic_diseases=chronic_diseases,
+                allergies=allergies,
+                urgency_profile=urgency_profile,
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo preparar el informe: {e}")
+            return
+
+        default_name = f"informe_diagnostico_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        selected_path = filedialog.asksaveasfilename(
+            title="Guardar informe PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=default_name,
+        )
+
+        if not selected_path:
+            return
+
+        try:
+            pdf_path = generar_informe_pdf(report_payload, output_path=selected_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo generar el PDF: {e}")
+            return
+
+        messagebox.showinfo(
+            "Informe PDF generado",
+            "Se generó correctamente el informe con diagnosticos, afinidad, reglas activadas y tratamiento seguro.\n\n"
+            f"Ruta: {pdf_path}"
         )
     
     def clear_selection(self):
