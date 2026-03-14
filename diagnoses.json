@@ -1,0 +1,84 @@
+{
+  "diagnoses": [
+    {
+      "id": 1,
+      "symptoms": [
+        "Congestion Nasal",
+        "Dolor Abdominal"
+      ],
+      "enfermedades_cronicas": [],
+      "alergias": [],
+      "conditions": [
+        {
+          "name": "Resfriado",
+          "relevance": 1
+        },
+        {
+          "name": "Gastritis",
+          "relevance": 1
+        },
+        {
+          "name": "Apendicitis",
+          "relevance": 1
+        },
+        {
+          "name": "Colicos",
+          "relevance": 1
+        },
+        {
+          "name": "Ulcera",
+          "relevance": 1
+        },
+        {
+          "name": "Alergia",
+          "relevance": 1
+        },
+        {
+          "name": "Sinusitis",
+          "relevance": 1
+        }
+      ],
+      "date": "2026-03-08 21:54:31",
+      "source": "prolog"
+    },
+    {
+      "id": 2,
+      "symptoms": [
+        {
+          "name": "Fiebre",
+          "severity": "Severo"
+        },
+        {
+          "name": "Tos",
+          "severity": "Moderado"
+        },
+        {
+          "name": "Congestión Nasal",
+          "severity": "Leve"
+        }
+      ],
+      "enfermedades_cronicas": [
+        "Hipertensión"
+      ],
+      "alergias": [
+        "Penicilina"
+      ],
+      "conditions": [
+        {
+          "name": "Gripe",
+          "relevance": 5
+        },
+        {
+          "name": "Resfriado",
+          "relevance": 3
+        },
+        {
+          "name": "Infección Viral",
+          "relevance": 4
+        }
+      ],
+      "date": "2026-03-09 22:01:57",
+      "source": "prolog"
+    }
+  ]
+}
